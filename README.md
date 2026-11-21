@@ -1,4 +1,4 @@
-![Alt text](BUILD/Splash.PCX?raw=true "AdSynth")
+![Alt text](SPLASH.png?raw=true "AdSynth")
 
 # ADSYNTH: DOS FM Music Tracker
 
