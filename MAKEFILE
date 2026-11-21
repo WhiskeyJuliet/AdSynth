@@ -1,0 +1,19 @@
+CC = wcc386
+CFLAGS = -d2 -mf -3r -fp3 -oeatxh -zq -bt=dos
+LINKER = wlink
+SYSTEM = dos4g
+
+OBJS = opl.obj song.obj ui.obj main.obj
+
+all: adlibsyn.exe
+
+.c.obj:
+    $(CC) $(CFLAGS) $<
+
+adlibsyn.exe: $(OBJS)
+    $(LINKER) SYSTEM $(SYSTEM) NAME $@ FILE { $(OBJS) }
+
+clean:
+    del *.obj
+    del adlibsyn.exe
+    del *.map
