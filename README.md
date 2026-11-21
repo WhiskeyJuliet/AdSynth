@@ -7,7 +7,7 @@ ADSYNTH is a 9-channel FM music tracker for MS-DOS, designed for the YM3812 (OPL
 *   **OPL2 Synthesis**: Authentic 9-channel FM synthesis using the YM3812 chip.
 *   **Sequencing**: 4,096-row, 9-channel tracker grid with support for multi-cell selection, clipboard operations (Cut, Copy, Paste), and a 50-step undo/redo history.
 *   **Voice & Instrument Management**:
-    *   **Bank Support**: Imports and exports standard AdLib Visual Composer (.BNK) banks, STANDARD.BNK the stock soundbank from AVC can be found here (https://www.vgmpf.com/Wiki/images/3/3c/Ad_Lib_Visual_Composer_%28DOS%29.zip)
+    *   **Bank Support**: Imports and exports standard AdLib Visual Composer (.BNK) banks, STANDARD.BNK the stock soundbank from AVC can be found here (https://www.vgmpf.com/Wiki/images/3/37/AdLib_Visual_Composer_v1.51.zip).
     *   **Dynamic Patch Capture**: During IMF/DRO imports, the engine extracts distinct FM timbres from raw register streams, adding them to a custom internal bank for accurate voice reconstruction.
 *   **Project Files**:
     *   **ADS Format**: A self-contained project format storing tracker data, loop markers, and embedded custom instrument patches.
