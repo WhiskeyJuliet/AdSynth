@@ -53,3 +53,7 @@ I plan to improve compatibility with these formats in the future along with the 
 
 ADSYNTH is released as a project for historical and educational interest in DOS-based FM synthesis. For details on dependencies or individual source files, please review the repository headers.
 The code in the project was made with the aid of Google AI Studio. Sprite-work, UI & UX design by Whiskey_Juliet.
+
+## Screenshots
+
+![Alt text](screenshot1.png?raw=true "AdSynth Splash") ![Alt text](screenshot2.png?raw=true "AdSynth Banks") ![Alt text](screenshot3.png?raw=true "AdSynth Timeline")
