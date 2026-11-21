@@ -2,7 +2,7 @@
 
 # ADSYNTH: A MS-DOS AdLib FM Music Sequencer
 
-ADSYNTH is a 9-channel FM music tracker for MS-DOS, designed for the YM3812 (OPL2) sound chip. It provides an environment for composing, editing, and exporting OPL2 music while supporting legacy AdLib file formats.
+ADSYNTH is a AdLib9-channel FM music AdLib Sequencer for MS-DOS, designed for the YM3812 (OPL2) sound chip. It provides an environment for composing, editing, and exporting OPL2 music while supporting legacy AdLib file formats.
 
 ## Core Features
 
@@ -42,7 +42,14 @@ ADSYNTH is a 9-channel FM music tracker for MS-DOS, designed for the YM3812 (OPL
 ## Compilation
 
 To compile the project, use the provided `BUILD.BAT` script with the Open Watcom 1.9 toolchain. The build system compiles the source units into `BUILD\*.OBJ` and links them to generate `ADLIBSYN.EXE`.
+Or download the currently available Pre-Release from the Releases page (https://github.com/WhiskeyJuliet/AdSynth/releases).
+
+## Notes
+
+The .DRO and .IMF support is still very WIP and while you can import some files and exports may work in some other applications it is my no means perfect at this point.
+I plan to improve compatibility with these formats in the future along with the option to use AdSynth's ADS project format for your own games with a library option. 
 
 ## License
 
 ADSYNTH is released as a project for historical and educational interest in DOS-based FM synthesis. For details on dependencies or individual source files, please review the repository headers.
+The code in the project was made with the aid of Google AI Studio. Sprite-work, UI & UX design by Whiskey_Juliet.
