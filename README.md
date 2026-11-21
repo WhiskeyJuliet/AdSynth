@@ -46,7 +46,7 @@ Or download the currently available Pre-Release from the Releases page (https://
 
 ## Notes
 
-The .DRO and .IMF support is still very WIP and while you can import some files and exports may work in some other applications it is my no means perfect at this point.
+The .DRO and .IMF support is still very WIP and while you can import some files and exports may work in some other applications it is by no means complete at this point.
 I plan to improve compatibility with these formats in the future along with the option to use AdSynth's ADS project format for your own games with a library option. 
 
 ## License
