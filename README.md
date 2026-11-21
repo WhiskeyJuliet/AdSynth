@@ -1,6 +1,6 @@
 ![Alt text](SPLASH.png?raw=true "AdSynth")
 
-# ADSYNTH: DOS FM Music Tracker
+# ADSYNTH: A MS-DOS AdLib FM Music Sequencer
 
 ADSYNTH is a 9-channel FM music tracker for MS-DOS, designed for the YM3812 (OPL2) sound chip. It provides an environment for composing, editing, and exporting OPL2 music while supporting legacy AdLib file formats.
 
