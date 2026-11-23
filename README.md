@@ -1,4 +1,4 @@
-[Alt text](Supporting Files/SPLASH.png?raw=true "AdSynth")
+![Alt text](Supporting Files/SPLASH.png?raw=true "AdSynth")
 
 # ADSYNTH: A MS-DOS AdLib FM Music Sequencer
 
@@ -56,4 +56,4 @@ The code in the project was made with the aid of Google AI Studio. Sprite-work, 
 
 ## Screenshots
 
-![Alt text](screenshot1.png?raw=true "AdSynth Splash") ![Alt text](screenshot2.png?raw=true "AdSynth Banks") ![Alt text](screenshot3.png?raw=true "AdSynth Timeline")
+![Alt text](Supporting Files/screenshot1.png?raw=true "AdSynth Splash") ![Alt text](Supporting Files/screenshot2.png?raw=true "AdSynth Banks") ![Alt text](Supporting Files/screenshot3.png?raw=true "AdSynth Timeline")
