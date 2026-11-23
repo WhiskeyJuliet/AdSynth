@@ -16,7 +16,7 @@ ADSYNTH is a AdLib9-channel FM music AdLib Sequencer for MS-DOS, designed for th
     *   **Auto-Save**: Automatic 20-minute interval saving to `AUTOSAVE.ADS`.
 *   **Compatibility**:
     *   Exports IMF and DRO files with proper OPL initialization and timbre register support for compatibility with external DOS players like AdPlay.
-    *   Adjustable clock rates (70 Hz, 560 Hz, 700 Hz, 1000 Hz) to match original game engine requirements.
+    *   Adjustable clock rates: 280 Hz (Duke Nukem II), 560 Hz (Keen/Bio Menace/Type-1 IMF), 700 Hz (Wolf3D/WLF/Blake Stone) and 1000 Hz (RAW OPL/DRO) to match original game engine requirements.
 
 ## Technical Specifications
 
