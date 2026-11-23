@@ -26,19 +26,22 @@ static int  g_autoSaveEnabled = 1;
 static char g_projectStatusMsg[48] = "";
 static clock_t g_lastAutoSaveTick = 0;
 
-/* F3: Import / Export Variables */
+/* F3: Import / Export Variables (Tab 0 = IMPORT, Tab 1 = EXPORT) */
 static int  g_importExportTab = 0;
 static int  g_isDroFormat = 0;
 static int  g_exportSupportingBnk = 1;
+static uint16_t g_importImfHz = 0;
+static uint16_t g_exportImfHz = 700;
 static char g_audioFilename[32] = "TRACK1.IMF";
 static char g_audioStatusMsg[48] = "";
 
 static char g_timeInputBuffer[16] = "00:00:00";
 static int g_timeInputSlot = 0;
 
-/* BPM & Engine Clock Editor */
-static char g_bpmInputBuffer[8] = "125";
-static uint16_t g_selectedClockPreset = 560;
+/* Tempo & Track Clock Editor */
+static char g_tempoInputBuffer[8] = "120";
+static uint16_t g_selectedClockPreset = 700;
+static uint16_t g_selectedRowMsPreset = 30;
 
 static int g_instWindowTab = 0;
 static int g_instWindowPage = 0;
@@ -49,9 +52,13 @@ static unsigned long g_lastTimeClickTime = 0;
 static int g_lastTimeClickX = 0;
 static int g_lastTimeClickY = 0;
 
-static unsigned long g_lastBpmClickTime = 0;
-static int g_lastBpmClickX = 0;
-static int g_lastBpmClickY = 0;
+static unsigned long g_lastTempoClickTime = 0;
+static int g_lastTempoClickX = 0;
+static int g_lastTempoClickY = 0;
+
+static unsigned long g_lastClkClickTime = 0;
+static int g_lastClkClickX = 0;
+static int g_lastClkClickY = 0;
 
 static unsigned long g_lastInstClickTime = 0;
 static int g_lastInstClickX = 0;
@@ -61,8 +68,92 @@ static int g_previewTimer = 0;
 static int g_scrollbarDragging = 0;
 static int g_isShiftDragging = 0;
 
-static clock_t g_lastSubTick = 0;
+/* High-Precision 8253/8254 PIT Channel 0 Mode 2 Timer */
+static uint32_t g_lastRawPit = 0;
+static uint32_t g_lastPitCount = 0;
+static double g_subStepAccumMs = 0.0;
 static int g_subStepIndex = 0;
+
+static void Timer_Init(void) {
+    _disable();
+    outp(0x43, 0x34);
+    outp(0x40, 0x00);
+    outp(0x40, 0x00);
+    _enable();
+}
+
+static void Timer_Shutdown(void) {
+    _disable();
+    outp(0x43, 0x36);
+    outp(0x40, 0x00);
+    outp(0x40, 0x00);
+    _enable();
+}
+
+static uint32_t Timer_GetPitTicks(void) {
+    uint32_t b;
+    uint8_t lo, hi;
+    uint16_t cnt;
+    uint32_t raw;
+
+    _disable();
+    outp(0x43, 0x00);
+    lo = (uint8_t)inp(0x40);
+    hi = (uint8_t)inp(0x40);
+    b = *(volatile uint32_t *)0x046C;
+    _enable();
+
+    cnt = (uint16_t)(lo | ((uint16_t)hi << 8));
+    raw = (b << 16) | (uint32_t)(0xFFFFU - cnt);
+
+    if (raw < g_lastRawPit && (g_lastRawPit - raw) < 0x20000UL) {
+        raw += 0x10000UL;
+    }
+    g_lastRawPit = raw;
+    return raw;
+}
+
+static void Audio_Poll(void) {
+    static int inPoll = 0;
+    uint32_t nowPit;
+    int32_t deltaPit;
+    double deltaMs, subStepMs;
+    int steps = 0;
+
+    if (inPoll) return;
+    inPoll = 1;
+
+    nowPit = Timer_GetPitTicks();
+    deltaPit = (int32_t)(nowPit - g_lastPitCount);
+    g_lastPitCount = nowPit;
+
+    if (deltaPit < 0) deltaPit = 0;
+
+    if (g_song.playing) {
+        deltaMs = (double)deltaPit / 1193.181667;
+        if (deltaMs > 100.0) deltaMs = 100.0;
+        g_subStepAccumMs += deltaMs;
+
+        subStepMs = Song_GetMsPerRowFloat() / 6.0;
+        if (subStepMs < 0.5) subStepMs = 0.5;
+
+        while (g_song.playing && g_subStepAccumMs >= subStepMs && steps < 16) {
+            g_subStepAccumMs -= subStepMs;
+            Song_SubTick(g_subStepIndex, 6);
+            g_subStepIndex++;
+            if (g_subStepIndex >= 6) {
+                g_subStepIndex = 0;
+                Song_Tick();
+                g_cursorRow = g_song.currentRow;
+            }
+            steps++;
+        }
+    } else {
+        g_subStepAccumMs = 0.0;
+    }
+
+    inPoll = 0;
+}
 
 static int KeyToNote(char key, int *octaveOffset) {
     *octaveOffset = 0;
@@ -107,17 +198,51 @@ static void PreviewInstrument(int instIdx) {
 static void ParseTimeCodeAndJump(const char *timeStr) {
     unsigned int m, s, h;
     unsigned long total_ms;
-    uint32_t msPerRow;
-    uint16_t targetRow;
+    double msPerRow;
+    uint32_t targetRow;
 
     m = 0; s = 0; h = 0;
     if (sscanf(timeStr, "%u:%u:%u", &m, &s, &h) >= 2) {
         total_ms = (m * 60UL * 1000UL) + (s * 1000UL) + (h * 10UL);
-        msPerRow = Song_GetMsPerRow();
-        targetRow = (uint16_t)(total_ms / (unsigned long)msPerRow);
+        msPerRow = Song_GetMsPerRowFloat();
+        targetRow = (uint32_t)((double)total_ms / msPerRow);
         if (targetRow >= PATTERN_ROWS) targetRow = PATTERN_ROWS - 1;
-        g_cursorRow = targetRow;
-        g_song.currentRow = targetRow;
+        g_cursorRow = (uint16_t)targetRow;
+        g_song.currentRow = (uint16_t)targetRow;
+    }
+}
+
+static void CycleImportImfHz(void) {
+    if (g_importImfHz == 0) g_importImfHz = 280;
+    else if (g_importImfHz == 280) g_importImfHz = 560;
+    else if (g_importImfHz == 560) g_importImfHz = 700;
+    else g_importImfHz = 0;
+}
+
+static void CycleExportImfHz(void) {
+    if (g_exportImfHz == 280) g_exportImfHz = 560;
+    else if (g_exportImfHz == 560) g_exportImfHz = 700;
+    else g_exportImfHz = 280;
+}
+
+static void ExecuteImportExport(void) {
+    if (g_importExportTab == 0) {
+        int ok = g_isDroFormat ? Song_LoadDRO(g_audioFilename) : Song_LoadIMF_Ex(g_audioFilename, g_importImfHz);
+        if (ok) {
+            g_cursorRow = 0;
+            g_song.currentRow = 0;
+            sprintf(g_audioStatusMsg, "OK: %d NOTES, %d VOICES", Song_GetLastImportNoteCount(), Song_GetLastImportVoiceCount());
+            g_dialog = DIALOG_NONE;
+        } else {
+            strcpy(g_audioStatusMsg, "IMPORT ERROR!");
+        }
+    } else {
+        int ok = g_isDroFormat ? Song_ExportDRO(g_audioFilename) : Song_ExportIMF_Ex(g_audioFilename, g_exportImfHz);
+        if (ok && g_exportSupportingBnk) {
+            Song_ExportSupportingBNK(g_audioFilename);
+        }
+        strcpy(g_audioStatusMsg, ok ? "EXPORT COMPLETE!" : "EXPORT FAILED!");
+        if (ok) g_dialog = DIALOG_NONE;
     }
 }
 
@@ -135,7 +260,7 @@ static void HandleDialogMouse(int *outRunning) {
         return;
     }
 
-    if (g_dialog == DIALOG_ABOUT || g_dialog == DIALOG_INST_INFO || g_dialog == DIALOG_TIME_INFO || g_dialog == DIALOG_BPM_INFO) {
+    if (g_dialog == DIALOG_ABOUT || g_dialog == DIALOG_INST_INFO || g_dialog == DIALOG_TIME_INFO || g_dialog == DIALOG_TEMPO_INFO) {
         g_dialog = DIALOG_NONE;
         return;
     }
@@ -166,21 +291,44 @@ static void HandleDialogMouse(int *outRunning) {
         return;
     }
 
-    if (g_dialog == DIALOG_BPM_WINDOW) {
-        if (g_mouse.x >= 52 && g_mouse.x <= 268) {
-            if (g_mouse.y >= 84 && g_mouse.y <= 96)   g_selectedClockPreset = 70;
-            if (g_mouse.y >= 98 && g_mouse.y <= 110)  g_selectedClockPreset = 560;
-            if (g_mouse.y >= 112 && g_mouse.y <= 124) g_selectedClockPreset = 700;
-            if (g_mouse.y >= 126 && g_mouse.y <= 138) g_selectedClockPreset = 1000;
-        }
-        if (g_mouse.x >= 80 && g_mouse.x <= 145 && g_mouse.y >= 148 && g_mouse.y <= 164) {
-            int newBpm = atoi(g_bpmInputBuffer);
-            if (newBpm >= 30 && newBpm <= 300) g_song.bpm = (uint16_t)newBpm;
-            g_song.clockHz = g_selectedClockPreset;
+    if (g_dialog == DIALOG_TEMPO_WINDOW) {
+        if (g_mouse.x >= 85 && g_mouse.x <= 145 && g_mouse.y >= 115 && g_mouse.y <= 131) {
+            int newTempo = atoi(g_tempoInputBuffer);
+            if (newTempo >= 30 && newTempo <= 300) g_song.tempo = (uint16_t)newTempo;
             g_dialog = DIALOG_NONE;
             return;
         }
-        if (g_mouse.x >= 175 && g_mouse.x <= 240 && g_mouse.y >= 148 && g_mouse.y <= 164) {
+        if (g_mouse.x >= 175 && g_mouse.x <= 235 && g_mouse.y >= 115 && g_mouse.y <= 131) {
+            g_dialog = DIALOG_NONE;
+            return;
+        }
+        return;
+    }
+
+    if (g_dialog == DIALOG_TRACK_WINDOW) {
+        if (g_mouse.x >= 42 && g_mouse.x <= 278) {
+            if (g_mouse.y >= 61 && g_mouse.y <= 72)  g_selectedClockPreset = 280;
+            if (g_mouse.y >= 74 && g_mouse.y <= 85)  g_selectedClockPreset = 560;
+            if (g_mouse.y >= 87 && g_mouse.y <= 98)  g_selectedClockPreset = 700;
+            if (g_mouse.y >= 100 && g_mouse.y <= 111) g_selectedClockPreset = 1000;
+        }
+        if (g_mouse.y >= 127 && g_mouse.y <= 141) {
+            if (g_mouse.x >= 42 && g_mouse.x <= 86)   g_selectedRowMsPreset = 10;
+            if (g_mouse.x >= 90 && g_mouse.x <= 134)  g_selectedRowMsPreset = 20;
+            if (g_mouse.x >= 138 && g_mouse.x <= 182) g_selectedRowMsPreset = 30;
+            if (g_mouse.x >= 186 && g_mouse.x <= 230) g_selectedRowMsPreset = 60;
+            if (g_mouse.x >= 234 && g_mouse.x <= 278) g_selectedRowMsPreset = 120;
+        }
+        if (g_mouse.x >= 75 && g_mouse.x <= 140 && g_mouse.y >= 154 && g_mouse.y <= 170) {
+            Song_SetClockHz(g_selectedClockPreset);
+            if (g_selectedRowMsPreset != g_song.rowMs) {
+                Song_RescaleRowMs(g_selectedRowMsPreset);
+                g_cursorRow = g_song.currentRow;
+            }
+            g_dialog = DIALOG_NONE;
+            return;
+        }
+        if (g_mouse.x >= 180 && g_mouse.x <= 245 && g_mouse.y >= 154 && g_mouse.y <= 170) {
             g_dialog = DIALOG_NONE;
             return;
         }
@@ -248,25 +396,21 @@ static void HandleDialogMouse(int *outRunning) {
                 g_isDroFormat = 1;
                 strcpy(g_audioFilename, "TRACK1.DRO");
                 return;
+            } else if (!g_isDroFormat && g_mouse.x >= 205 && g_mouse.x <= 281) {
+                if (g_importExportTab == 0) {
+                    CycleImportImfHz();
+                } else {
+                    CycleExportImfHz();
+                }
+                return;
             }
         }
-        if (g_importExportTab == 0 && g_mouse.x >= 37 && g_mouse.x <= 220 && g_mouse.y >= 108 && g_mouse.y <= 122) {
+        if (g_importExportTab == 1 && g_mouse.x >= 37 && g_mouse.x <= 220 && g_mouse.y >= 108 && g_mouse.y <= 122) {
             g_exportSupportingBnk = !g_exportSupportingBnk;
             return;
         }
         if (g_mouse.x >= 80 && g_mouse.x <= 145 && g_mouse.y >= 142 && g_mouse.y <= 157) {
-            if (g_importExportTab == 0) {
-                int ok = g_isDroFormat ? Song_ExportDRO(g_audioFilename) : Song_ExportIMF(g_audioFilename);
-                if (ok && g_exportSupportingBnk) {
-                    Song_ExportSupportingBNK(g_audioFilename);
-                }
-                strcpy(g_audioStatusMsg, ok ? "EXPORT COMPLETE!" : "EXPORT FAILED!");
-                if (ok) g_dialog = DIALOG_NONE;
-            } else {
-                int ok = g_isDroFormat ? Song_LoadDRO(g_audioFilename) : Song_LoadIMF(g_audioFilename);
-                strcpy(g_audioStatusMsg, ok ? "IMPORT SUCCESSFUL!" : "IMPORT ERROR!");
-                if (ok) g_dialog = DIALOG_NONE;
-            }
+            ExecuteImportExport();
             return;
         }
         if (g_mouse.x >= 170 && g_mouse.x <= 235 && g_mouse.y >= 142 && g_mouse.y <= 157) {
@@ -380,14 +524,14 @@ static void HandleDialogMouse(int *outRunning) {
 }
 
 static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
-    int keyIndex, note, oct, startRow, rowSlot, clickedChannel;
+    int keyIndex, note, oct, rowSlot, clickedChannel;
+    int32_t startRow;
     uint16_t targetRow;
     unsigned long now;
     int totalInst;
 
     totalInst = Bank_GetTotalCount();
 
-    /* 1. Piano Roll Click */
     if (g_mouse.y >= 160 && g_mouse.y <= 196) {
         keyIndex = (g_mouse.x - 10) / 21;
         if (keyIndex >= 0 && keyIndex < 14) {
@@ -401,31 +545,29 @@ static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
         return;
     }
 
-    /* 2. Channel Header Click */
     if (g_mouse.y >= 18 && g_mouse.y <= 30) {
-        clickedChannel = (g_mouse.x - 30) / 31;
-        if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS) {
-            g_selectedChannel = clickedChannel;
+        if (g_mouse.x >= 31) {
+            clickedChannel = (g_mouse.x - 36) / 31;
+            if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS) {
+                g_selectedChannel = clickedChannel;
+            }
         }
         return;
     }
 
-    /* 3. Tracker Matrix Grid Click */
     if (g_mouse.y >= 33 && g_mouse.y <= 150) {
-        startRow = g_cursorRow >= 5 ? g_cursorRow - 5 : 0;
-        if (startRow > PATTERN_ROWS - 10) startRow = PATTERN_ROWS - 10;
+        startRow = (int32_t)g_cursorRow >= 5 ? (int32_t)g_cursorRow - 5 : 0;
+        if (startRow > (int32_t)PATTERN_ROWS - 10) startRow = (int32_t)PATTERN_ROWS - 10;
         rowSlot = (g_mouse.y - 33) / 12;
 
-        if (g_mouse.x >= 4 && g_mouse.x <= 28) {
+        if (g_mouse.x >= 4 && g_mouse.x <= 32) {
             targetRow = (uint16_t)(startRow + rowSlot);
-            if (targetRow < PATTERN_ROWS) {
-                g_cursorRow = targetRow;
-                g_song.currentRow = targetRow;
-            }
-        } else {
-            clickedChannel = (g_mouse.x - 30) / 31;
+            g_cursorRow = targetRow;
+            g_song.currentRow = targetRow;
+        } else if (g_mouse.x >= 33) {
+            clickedChannel = (g_mouse.x - 36) / 31;
             targetRow = (uint16_t)(startRow + rowSlot);
-            if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS && targetRow < PATTERN_ROWS) {
+            if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS) {
                 TrackerNote *n = &g_song.patterns[g_song.currentPattern].rows[targetRow][clickedChannel];
                 if (shiftPressed) {
                     Song_SetSelection(targetRow, (uint8_t)clickedChannel, !(n->flags & 0x01));
@@ -440,16 +582,16 @@ static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
         return;
     }
 
-    /* 4. Top Navigation Bar (Left-Click Actions) */
+    /* 4. Top Navigation Bar (Matches Updated Positions in UI_DrawApp) */
     if (g_mouse.y < 14) {
-        /* AdLib Logo (2..13) */
+        /* LOGO (2..13) */
         if (g_mouse.x >= 2 && g_mouse.x <= 13) {
             g_dialog = DIALOG_ABOUT;
             return;
         }
 
-        /* OCT Number Value Only (80..94) */
-        if (g_mouse.x >= 80 && g_mouse.x <= 94) {
+        /* OCT Number (88..97) */
+        if (g_mouse.x >= 88 && g_mouse.x <= 97) {
             if (shiftPressed) {
                 g_selectedOctave = (g_selectedOctave + 10 > 7) ? 7 : g_selectedOctave + 10;
             } else {
@@ -458,8 +600,8 @@ static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
             return;
         }
 
-        /* INST Number Value Only (122..144) */
-        if (g_mouse.x >= 122 && g_mouse.x <= 144) {
+        /* INST Number (124..138) */
+        if (g_mouse.x >= 124 && g_mouse.x <= 138) {
             if (shiftPressed) {
                 g_selectedPreset = (g_selectedPreset + 10) % totalInst;
             } else if (ctrlPressed) {
@@ -470,12 +612,12 @@ static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
             return;
         }
 
-        /* INST Label (98..121): Double-click opens Instrument Browser Window */
-        if (g_mouse.x >= 96 && g_mouse.x < 122) {
+        /* INST Label (103..123): Double-click opens Instrument Browser */
+        if (g_mouse.x >= 103 && g_mouse.x < 124) {
             now = (unsigned long)clock();
-            if ((now - g_lastInstClickTime < (CLOCKS_PER_SEC * 0.17)) &&
-                abs(g_mouse.x - g_lastInstClickX) <= 2 &&
-                abs(g_mouse.y - g_lastInstClickY) <= 2) {
+            if ((now - g_lastInstClickTime < (CLOCKS_PER_SEC * 0.25)) &&
+                abs(g_mouse.x - g_lastInstClickX) <= 3 &&
+                abs(g_mouse.y - g_lastInstClickY) <= 3) {
                 g_dialog = DIALOG_INST_WINDOW;
                 g_instWindowTab = 0;
                 g_instWindowPage = g_selectedPreset / 16;
@@ -492,42 +634,59 @@ static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
             return;
         }
 
-        /* BPM Number Value Only (172..192) */
-        if (g_mouse.x >= 172 && g_mouse.x <= 192) {
+        /* BPM Number (158..174) */
+        if (g_mouse.x >= 158 && g_mouse.x <= 174) {
             if (shiftPressed) {
-                g_song.bpm = (g_song.bpm + 20 > 300) ? 300 : g_song.bpm + 20;
+                g_song.tempo = (g_song.tempo + 10 > 300) ? 300 : g_song.tempo + 10;
             } else if (ctrlPressed) {
-                g_song.bpm = (g_song.bpm < 35) ? 30 : g_song.bpm - 5;
+                g_song.tempo = (g_song.tempo <= 31) ? 30 : g_song.tempo - 1;
             } else {
-                g_song.bpm = (g_song.bpm + 5 > 300) ? 300 : g_song.bpm + 5;
+                g_song.tempo = (g_song.tempo + 1 > 300) ? 300 : g_song.tempo + 1;
             }
             return;
         }
 
-        /* BPM Label (148..171): Double-click opens BPM editor window */
-        if (g_mouse.x >= 146 && g_mouse.x < 172) {
+        /* BPM Label (141..157): Double-click opens Set Playback Tempo */
+        if (g_mouse.x >= 141 && g_mouse.x < 158) {
             now = (unsigned long)clock();
-            if ((now - g_lastBpmClickTime < (CLOCKS_PER_SEC * 0.17)) &&
-                abs(g_mouse.x - g_lastBpmClickX) <= 2 &&
-                abs(g_mouse.y - g_lastBpmClickY) <= 2) {
-                g_dialog = DIALOG_BPM_WINDOW;
-                sprintf(g_bpmInputBuffer, "%d", g_song.bpm);
+            if ((now - g_lastTempoClickTime < (CLOCKS_PER_SEC * 0.25)) &&
+                abs(g_mouse.x - g_lastTempoClickX) <= 3 &&
+                abs(g_mouse.y - g_lastTempoClickY) <= 3) {
+                g_dialog = DIALOG_TEMPO_WINDOW;
+                sprintf(g_tempoInputBuffer, "%d", g_song.tempo);
+                g_lastTempoClickTime = 0;
+            } else {
+                g_lastTempoClickTime = now;
+                g_lastTempoClickX = g_mouse.x;
+                g_lastTempoClickY = g_mouse.y;
+            }
+            return;
+        }
+
+        /* CLK (180..218): Double-click opens Track Engine & Resolution */
+        if (g_mouse.x >= 180 && g_mouse.x <= 218) {
+            now = (unsigned long)clock();
+            if ((now - g_lastClkClickTime < (CLOCKS_PER_SEC * 0.25)) &&
+                abs(g_mouse.x - g_lastClkClickX) <= 3 &&
+                abs(g_mouse.y - g_lastClkClickY) <= 3) {
+                g_dialog = DIALOG_TRACK_WINDOW;
                 g_selectedClockPreset = g_song.clockHz;
-                g_lastBpmClickTime = 0;
+                g_selectedRowMsPreset = g_song.rowMs;
+                g_lastClkClickTime = 0;
             } else {
-                g_lastBpmClickTime = now;
-                g_lastBpmClickX = g_mouse.x;
-                g_lastBpmClickY = g_mouse.y;
+                g_lastClkClickTime = now;
+                g_lastClkClickX = g_mouse.x;
+                g_lastClkClickY = g_mouse.y;
             }
             return;
         }
 
-        /* Timecode (196..248) */
-        if (g_mouse.x >= 194 && g_mouse.x <= 248) {
+        /* TIMECODE (227..282) */
+        if (g_mouse.x >= 227 && g_mouse.x <= 282) {
             now = (unsigned long)clock();
-            if ((now - g_lastTimeClickTime < (CLOCKS_PER_SEC * 0.17)) &&
-                abs(g_mouse.x - g_lastTimeClickX) <= 2 &&
-                abs(g_mouse.y - g_lastTimeClickY) <= 2) {
+            if ((now - g_lastTimeClickTime < (CLOCKS_PER_SEC * 0.25)) &&
+                abs(g_mouse.x - g_lastTimeClickX) <= 3 &&
+                abs(g_mouse.y - g_lastTimeClickY) <= 3) {
                 g_dialog = DIALOG_JUMP_TIME;
                 strcpy(g_timeInputBuffer, "00:00:00");
                 g_timeInputSlot = 0;
@@ -540,7 +699,7 @@ static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
             return;
         }
 
-        /* Help '?' button (286..298) */
+        /* '?' Help (286..298) */
         if (g_mouse.x >= 286 && g_mouse.x <= 298) {
             g_dialog = DIALOG_HELP;
             g_helpPage = 0;
@@ -550,30 +709,30 @@ static void HandleTrackerMouse(int shiftPressed, int ctrlPressed) {
 }
 
 static void HandleTrackerRightClick(void) {
-    int startRow, rowSlot;
+    int32_t startRow;
+    int rowSlot;
     uint16_t targetRow;
     int clickedChannel;
     unsigned int shift = _bios_keybrd(_KEYBRD_SHIFTSTATUS);
     int shiftPressed = (shift & 0x03) != 0;
     int totalInst = Bank_GetTotalCount();
 
-    if (g_dialog == DIALOG_ABOUT || g_dialog == DIALOG_INST_INFO || g_dialog == DIALOG_TIME_INFO || g_dialog == DIALOG_BPM_INFO) {
+    if (g_dialog == DIALOG_ABOUT || g_dialog == DIALOG_INST_INFO || g_dialog == DIALOG_TIME_INFO || g_dialog == DIALOG_TEMPO_INFO) {
         g_dialog = DIALOG_NONE;
         return;
     }
 
     if (g_dialog != DIALOG_NONE) return;
 
-    /* Top Bar Right-Clicks */
     if (g_mouse.y < 14) {
-        /* INST Label (98..121): Right-click shows Instrument Tooltip */
-        if (g_mouse.x >= 96 && g_mouse.x < 122) {
+        /* INST Label (103..123) */
+        if (g_mouse.x >= 103 && g_mouse.x < 124) {
             g_dialog = DIALOG_INST_INFO;
             return;
         }
 
-        /* INST Number Value (122..144): Right-click decreases value */
-        if (g_mouse.x >= 122 && g_mouse.x <= 144) {
+        /* INST Number (124..138) */
+        if (g_mouse.x >= 124 && g_mouse.x <= 138) {
             if (shiftPressed) {
                 g_selectedPreset = (g_selectedPreset - 10 + totalInst) % totalInst;
             } else {
@@ -582,24 +741,30 @@ static void HandleTrackerRightClick(void) {
             return;
         }
 
-        /* BPM Label (148..171): Right-click shows Clock Tooltip */
-        if (g_mouse.x >= 146 && g_mouse.x < 172) {
-            g_dialog = DIALOG_BPM_INFO;
+        /* BPM Label (141..157) */
+        if (g_mouse.x >= 141 && g_mouse.x < 158) {
+            g_dialog = DIALOG_TEMPO_INFO;
             return;
         }
 
-        /* BPM Number Value (172..192): Right-click decreases BPM */
-        if (g_mouse.x >= 172 && g_mouse.x <= 192) {
+        /* BPM Number (158..174) */
+        if (g_mouse.x >= 158 && g_mouse.x <= 174) {
             if (shiftPressed) {
-                g_song.bpm = (g_song.bpm < 50) ? 30 : g_song.bpm - 20;
+                g_song.tempo = (g_song.tempo < 40) ? 30 : g_song.tempo - 10;
             } else {
-                g_song.bpm = (g_song.bpm <= 35) ? 30 : g_song.bpm - 5;
+                g_song.tempo = (g_song.tempo <= 31) ? 30 : g_song.tempo - 1;
             }
             return;
         }
 
-        /* OCT Number Value (80..94): Right-click decreases octave */
-        if (g_mouse.x >= 80 && g_mouse.x <= 94) {
+        /* CLK (180..218) */
+        if (g_mouse.x >= 180 && g_mouse.x <= 218) {
+            g_dialog = DIALOG_TEMPO_INFO;
+            return;
+        }
+
+        /* OCT Number (88..97) */
+        if (g_mouse.x >= 88 && g_mouse.x <= 97) {
             if (shiftPressed) {
                 g_selectedOctave = (g_selectedOctave <= 4) ? 1 : g_selectedOctave - 3;
             } else {
@@ -608,8 +773,8 @@ static void HandleTrackerRightClick(void) {
             return;
         }
 
-        /* Timecode (194..248) */
-        if (g_mouse.x >= 194 && g_mouse.x <= 248) {
+        /* TIMECODE (227..282) */
+        if (g_mouse.x >= 227 && g_mouse.x <= 282) {
             g_dialog = DIALOG_TIME_INFO;
             return;
         }
@@ -617,29 +782,26 @@ static void HandleTrackerRightClick(void) {
     }
 
     if (g_mouse.y >= 18 && g_mouse.y <= 30) {
-        clickedChannel = (g_mouse.x - 30) / 31;
-        if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS) {
-            Song_ToggleChannelMuteSolo((uint8_t)clickedChannel);
+        if (g_mouse.x >= 31) {
+            clickedChannel = (g_mouse.x - 36) / 31;
+            if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS) {
+                Song_ToggleChannelMuteSolo((uint8_t)clickedChannel);
+            }
         }
         return;
     }
 
     if (g_mouse.y >= 33 && g_mouse.y <= 150) {
-        if (g_mouse.x >= 4 && g_mouse.x <= 28) {
-            startRow = g_cursorRow >= 5 ? g_cursorRow - 5 : 0;
-            if (startRow > PATTERN_ROWS - 10) startRow = PATTERN_ROWS - 10;
-            rowSlot = (g_mouse.y - 33) / 12;
-            targetRow = (uint16_t)(startRow + rowSlot);
-            if (targetRow < PATTERN_ROWS) {
-                Song_ToggleLoopPoint(targetRow);
-            }
-        } else {
-            startRow = g_cursorRow >= 5 ? g_cursorRow - 5 : 0;
-            if (startRow > PATTERN_ROWS - 10) startRow = PATTERN_ROWS - 10;
-            rowSlot = (g_mouse.y - 33) / 12;
-            targetRow = (uint16_t)(startRow + rowSlot);
-            clickedChannel = (g_mouse.x - 30) / 31;
-            if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS && targetRow < PATTERN_ROWS) {
+        startRow = (int32_t)g_cursorRow >= 5 ? (int32_t)g_cursorRow - 5 : 0;
+        if (startRow > (int32_t)PATTERN_ROWS - 10) startRow = (int32_t)PATTERN_ROWS - 10;
+        rowSlot = (g_mouse.y - 33) / 12;
+        targetRow = (uint16_t)(startRow + rowSlot);
+
+        if (g_mouse.x >= 4 && g_mouse.x <= 32) {
+            Song_ToggleLoopPoint(targetRow);
+        } else if (g_mouse.x >= 33) {
+            clickedChannel = (g_mouse.x - 36) / 31;
+            if (clickedChannel >= 0 && clickedChannel < MAX_CHANNELS) {
                 Song_UndoRecord(targetRow, (uint8_t)clickedChannel);
                 Song_ToggleNoteAttribute((uint8_t)clickedChannel, targetRow);
                 Song_UndoNextBatch();
@@ -663,27 +825,29 @@ int main(void) {
     static const int slotMap[6] = {0, 1, 3, 4, 6, 7};
     int totalInst;
     int isCtrl;
+    int note;
     clock_t nowClock;
-    clock_t ticksPerSubStep;
     clock_t autoSaveInterval;
 
+    Timer_Init();
     Bank_Init();
     OPL_Init(OPL_BASE_PORT);
     Song_Init();
     UI_Init();
+    UI_SetIdleCallback(Audio_Poll);
 
     for (ch = 0; ch < MAX_CHANNELS; ++ch) {
         OPL_SetInstrument((uint8_t)ch, Bank_GetInstrument(0));
     }
 
-    ticksPerSubStep = (clock_t)(CLOCKS_PER_SEC / 50);
-    if (ticksPerSubStep <= 0) ticksPerSubStep = 1;
-    g_lastSubTick = clock();
-
+    g_lastRawPit = Timer_GetPitTicks();
+    g_lastPitCount = g_lastRawPit;
     autoSaveInterval = (clock_t)CLOCKS_PER_SEC * 1200L;
     g_lastAutoSaveTick = clock();
 
     while (running) {
+        Audio_Poll();
+
         shift = _bios_keybrd(_KEYBRD_SHIFTSTATUS);
         shiftPressed = (shift & 0x03) != 0;
         ctrlPressed  = (shift & 0x04) != 0;
@@ -702,14 +866,14 @@ int main(void) {
         }
 
         if (g_dialog == DIALOG_NONE && g_mouse.leftDown && shiftPressed && g_isShiftDragging) {
-            if (g_mouse.y >= 33 && g_mouse.y <= 150 && g_mouse.x >= 30) {
-                int startRow = g_cursorRow >= 5 ? g_cursorRow - 5 : 0;
+            if (g_mouse.y >= 33 && g_mouse.y <= 150 && g_mouse.x >= 33) {
+                int32_t startRow = (int32_t)g_cursorRow >= 5 ? (int32_t)g_cursorRow - 5 : 0;
                 int rowSlot = (g_mouse.y - 33) / 12;
-                int clickedCh = (g_mouse.x - 30) / 31;
+                int clickedCh = (g_mouse.x - 36) / 31;
                 uint16_t targetRow;
-                if (startRow > PATTERN_ROWS - 10) startRow = PATTERN_ROWS - 10;
+                if (startRow > (int32_t)PATTERN_ROWS - 10) startRow = (int32_t)PATTERN_ROWS - 10;
                 targetRow = (uint16_t)(startRow + rowSlot);
-                if (clickedCh >= 0 && clickedCh < MAX_CHANNELS && targetRow < PATTERN_ROWS) {
+                if (clickedCh >= 0 && clickedCh < MAX_CHANNELS) {
                     Song_SetSelection(targetRow, (uint8_t)clickedCh, 1);
                 }
             }
@@ -753,7 +917,7 @@ int main(void) {
                     g_helpPage = 0;
                     g_scrollbarDragging = 0;
                 } else if (g_dialog == DIALOG_HELP) {
-                    if (g_helpPage < 2) {
+                    if (g_helpPage < 3) {
                         g_helpPage++;
                     } else {
                         g_dialog = DIALOG_NONE;
@@ -773,21 +937,29 @@ int main(void) {
                         running = 0;
                     }
                     g_dialog = DIALOG_NONE;
-                } else if (g_dialog == DIALOG_BPM_WINDOW) {
+                } else if (g_dialog == DIALOG_TEMPO_WINDOW) {
                     if (ascii == 13) {
-                        int newBpm = atoi(g_bpmInputBuffer);
-                        if (newBpm >= 30 && newBpm <= 300) g_song.bpm = (uint16_t)newBpm;
-                        g_song.clockHz = g_selectedClockPreset;
+                        int newTempo = atoi(g_tempoInputBuffer);
+                        if (newTempo >= 30 && newTempo <= 300) g_song.tempo = (uint16_t)newTempo;
                         g_dialog = DIALOG_NONE;
                     } else if (ascii == 8) {
-                        int len = (int)strlen(g_bpmInputBuffer);
-                        if (len > 0) g_bpmInputBuffer[len - 1] = '\0';
+                        int len = (int)strlen(g_tempoInputBuffer);
+                        if (len > 0) g_tempoInputBuffer[len - 1] = '\0';
                     } else if (ascii >= '0' && ascii <= '9') {
-                        int len = (int)strlen(g_bpmInputBuffer);
+                        int len = (int)strlen(g_tempoInputBuffer);
                         if (len < 3) {
-                            g_bpmInputBuffer[len] = (char)ascii;
-                            g_bpmInputBuffer[len + 1] = '\0';
+                            g_tempoInputBuffer[len] = (char)ascii;
+                            g_tempoInputBuffer[len + 1] = '\0';
                         }
+                    }
+                } else if (g_dialog == DIALOG_TRACK_WINDOW) {
+                    if (ascii == 13) {
+                        Song_SetClockHz(g_selectedClockPreset);
+                        if (g_selectedRowMsPreset != g_song.rowMs) {
+                            Song_RescaleRowMs(g_selectedRowMsPreset);
+                            g_cursorRow = g_song.currentRow;
+                        }
+                        g_dialog = DIALOG_NONE;
                     }
                 } else if (g_dialog == DIALOG_JUMP_TIME) {
                     if (ascii == 13) {
@@ -836,22 +1008,11 @@ int main(void) {
                     }
                 } else if (g_dialog == DIALOG_IMPORT_EXPORT_WINDOW) {
                     if (ascii == 13) {
-                        if (g_importExportTab == 0) {
-                            int ok = g_isDroFormat ? Song_ExportDRO(g_audioFilename) : Song_ExportIMF(g_audioFilename);
-                            if (ok && g_exportSupportingBnk) {
-                                Song_ExportSupportingBNK(g_audioFilename);
-                            }
-                            strcpy(g_audioStatusMsg, ok ? "EXPORT COMPLETE!" : "EXPORT FAILED!");
-                            if (ok) g_dialog = DIALOG_NONE;
-                        } else {
-                            int ok = g_isDroFormat ? Song_LoadDRO(g_audioFilename) : Song_LoadIMF(g_audioFilename);
-                            strcpy(g_audioStatusMsg, ok ? "IMPORT SUCCESSFUL!" : "IMPORT ERROR!");
-                            if (ok) g_dialog = DIALOG_NONE;
-                        }
+                        ExecuteImportExport();
                     } else if (ascii == '\t') {
                         g_isDroFormat = !g_isDroFormat;
                         strcpy(g_audioFilename, g_isDroFormat ? "TRACK1.DRO" : "TRACK1.IMF");
-                    } else if (isSpaceKey && g_importExportTab == 0) {
+                    } else if (isSpaceKey && g_importExportTab == 1) {
                         g_exportSupportingBnk = !g_exportSupportingBnk;
                     } else if (ascii == 8) {
                         int len = (int)strlen(g_audioFilename);
@@ -886,7 +1047,7 @@ int main(void) {
                             }
                         }
                     }
-                } else if (g_dialog == DIALOG_INST_INFO || g_dialog == DIALOG_TIME_INFO || g_dialog == DIALOG_BPM_INFO) {
+                } else if (g_dialog == DIALOG_INST_INFO || g_dialog == DIALOG_TIME_INFO || g_dialog == DIALOG_TEMPO_INFO) {
                     g_dialog = DIALOG_NONE;
                 }
             } else {
@@ -954,7 +1115,7 @@ int main(void) {
                 } else if (scan == 0x48) {
                     if (g_cursorRow > 0) g_cursorRow--;
                 } else if (scan == 0x50) {
-                    if (g_cursorRow < PATTERN_ROWS - 1) g_cursorRow++;
+                    if ((uint32_t)g_cursorRow < PATTERN_ROWS - 1) g_cursorRow++;
                 } else if (scan == 0x1A || ascii == '[') {
                     TrackerNote *n = &g_song.patterns[g_song.currentPattern].rows[g_cursorRow][g_selectedChannel];
                     Song_UndoRecord(g_cursorRow, (uint8_t)g_selectedChannel);
@@ -982,7 +1143,9 @@ int main(void) {
                             Song_ResetVoices();
                         } else {
                             g_song.playing = 1;
-                            g_lastSubTick = clock();
+                            g_subStepIndex = 0;
+                            g_subStepAccumMs = 0.0;
+                            g_lastPitCount = Timer_GetPitTicks();
                         }
                     } else {
                         if (g_song.playing) {
@@ -1000,7 +1163,8 @@ int main(void) {
                             }
                             g_song.playing = 1;
                             g_subStepIndex = 0;
-                            g_lastSubTick = clock();
+                            g_subStepAccumMs = 0.0;
+                            g_lastPitCount = Timer_GetPitTicks();
                         }
                     }
                 } else if (ascii == '\t') {
@@ -1012,7 +1176,7 @@ int main(void) {
                     if (g_selectedOctave > 1) g_selectedOctave--;
                 } else {
                     int octOffset = 0;
-                    int note = KeyToNote((char)ascii, &octOffset);
+                    note = KeyToNote((char)ascii, &octOffset);
                     if (note > 0) {
                         int finalOct = g_selectedOctave + octOffset;
                         if (finalOct > 7) finalOct = 7;
@@ -1021,7 +1185,7 @@ int main(void) {
                         OPL_NoteOn((uint8_t)g_selectedChannel, (uint8_t)(note - 1), (uint8_t)finalOct);
                         Song_SetNote((uint8_t)g_selectedChannel, g_cursorRow, (uint8_t)note, (uint8_t)finalOct, (uint8_t)g_selectedPreset);
                         Song_UndoNextBatch();
-                        if (g_cursorRow < PATTERN_ROWS - 1) g_cursorRow++;
+                        if ((uint32_t)g_cursorRow < PATTERN_ROWS - 1) g_cursorRow++;
                     }
                 }
             }
@@ -1042,32 +1206,20 @@ int main(void) {
             }
         }
 
-        if (g_song.playing) {
-            nowClock = clock();
-            if ((nowClock - g_lastSubTick) >= ticksPerSubStep) {
-                g_lastSubTick += ticksPerSubStep;
-                Song_SubTick(g_subStepIndex, 6);
-                g_subStepIndex++;
-                if (g_subStepIndex >= 6) {
-                    g_subStepIndex = 0;
-                    Song_Tick();
-                    g_cursorRow = g_song.currentRow;
-                }
-            }
-        }
-
+        Audio_Poll();
         UI_DrawApp(g_selectedChannel, g_selectedOctave, g_selectedPreset, (int)g_cursorRow);
 
         if (g_dialog == DIALOG_HELP) UI_DrawHelpDialog(g_helpPage);
         else if (g_dialog == DIALOG_ABOUT) UI_DrawAboutDialog();
         else if (g_dialog == DIALOG_PROJECT_WINDOW) UI_DrawProjectDialog(g_projectTab, g_projectFilename, g_autoSaveEnabled, g_projectStatusMsg);
-        else if (g_dialog == DIALOG_IMPORT_EXPORT_WINDOW) UI_DrawImportExportDialog(g_importExportTab, g_audioFilename, g_isDroFormat, g_exportSupportingBnk, g_audioStatusMsg);
+        else if (g_dialog == DIALOG_IMPORT_EXPORT_WINDOW) UI_DrawImportExportDialog(g_importExportTab, g_audioFilename, g_isDroFormat, g_exportSupportingBnk, g_importImfHz, g_exportImfHz, g_audioStatusMsg);
         else if (g_dialog == DIALOG_CLEAR_CONFIRM) UI_DrawConfirmDialog("NEW TRACK", "CLEAR ALL NOTES? (YES/NO)");
         else if (g_dialog == DIALOG_EXIT_CONFIRM) UI_DrawConfirmDialog("QUIT ADSYNTH", "ARE YOU SURE? (YES/NO)");
         else if (g_dialog == DIALOG_INST_INFO) UI_DrawInstPopup(g_mouse.x, g_mouse.y, g_selectedPreset);
         else if (g_dialog == DIALOG_TIME_INFO) UI_DrawTimePopup(g_mouse.x, g_mouse.y, Song_GetTotalLengthMS());
-        else if (g_dialog == DIALOG_BPM_INFO) UI_DrawBpmPopup(g_mouse.x, g_mouse.y, g_song.bpm, g_song.clockHz);
-        else if (g_dialog == DIALOG_BPM_WINDOW) UI_DrawBpmDialog(g_bpmInputBuffer, 0, g_selectedClockPreset);
+        else if (g_dialog == DIALOG_TEMPO_INFO) UI_DrawTempoPopup(g_mouse.x, g_mouse.y, g_song.tempo, g_song.clockHz);
+        else if (g_dialog == DIALOG_TEMPO_WINDOW) UI_DrawTempoDialog(g_tempoInputBuffer);
+        else if (g_dialog == DIALOG_TRACK_WINDOW) UI_DrawTrackDialog(g_selectedClockPreset, g_song.rowMs);
         else if (g_dialog == DIALOG_JUMP_TIME) UI_DrawJumpDialog(g_timeInputBuffer, g_timeInputSlot, "ENTER TIME & PRESS JUMP");
         else if (g_dialog == DIALOG_INST_WINDOW) UI_DrawInstWindow(g_instWindowTab, g_selectedPreset, g_instWindowPage, g_bnkFilenameBuffer, g_bnkStatusMsg);
 
@@ -1075,8 +1227,10 @@ int main(void) {
         UI_Present();
     }
 
+    UI_SetIdleCallback(NULL);
     UI_Shutdown();
     OPL_Shutdown();
+    Timer_Shutdown();
     printf("AdLib Synthesizer safely shut down.\n");
     return 0;
 }

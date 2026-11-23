@@ -1,8 +1,10 @@
 #include "opl.h"
 #include <conio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static uint16_t g_oplPort = OPL_BASE_PORT;
+static uint8_t g_lastB0[9];
 
 static const uint8_t g_modOffsets[9] = {
     0x00, 0x01, 0x02, 0x08, 0x09, 0x0A, 0x10, 0x11, 0x12
@@ -32,6 +34,7 @@ void OPL_Write(uint8_t reg, uint8_t val) {
 
 void OPL_Reset(void) {
     int i;
+    memset(g_lastB0, 0, sizeof(g_lastB0));
     for (i = 1; i <= 0xF5; ++i) {
         OPL_Write(i, 0x00);
     }
@@ -78,14 +81,12 @@ void OPL_SetInstrumentSustained(uint8_t ch, const OPL_Instrument *inst) {
     mod = g_modOffsets[ch];
     car = g_carOffsets[ch];
 
-    /* Modulator: EG-TYP = 1 (bit 5) so it holds sustain */
     OPL_Write(0x20 + mod, (uint8_t)(inst->mod_mult_vib_am | 0x20));
     OPL_Write(0x40 + mod, inst->mod_ksl_level);
     OPL_Write(0x60 + mod, inst->mod_attack_decay);
     OPL_Write(0x80 + mod, inst->mod_sustain_rel);
     OPL_Write(0xE0 + mod, inst->mod_wave);
 
-    /* Carrier: EG-TYP = 1 (bit 5) and keep sustain audible */
     OPL_Write(0x20 + car, (uint8_t)(inst->car_mult_vib_am | 0x20));
     OPL_Write(0x40 + car, inst->car_ksl_level);
     OPL_Write(0x60 + car, inst->car_attack_decay);
@@ -103,25 +104,36 @@ void OPL_SetInstrumentSustained(uint8_t ch, const OPL_Instrument *inst) {
 void OPL_NoteOn(uint8_t ch, uint8_t note, uint8_t octave) {
     uint16_t fnum;
     uint8_t noteIndex;
+    uint8_t b0Val;
     if (ch >= 9) return;
 
     noteIndex = note % 12;
     fnum = g_fNums[noteIndex];
 
-    OPL_Write(0xB0 + ch, 0x00);
+    /* Key-Off preserving previous octave/fnum so release does not pitch-drop */
+    if (g_lastB0[ch] & 0x20) {
+        g_lastB0[ch] &= (uint8_t)(~0x20);
+        OPL_Write(0xB0 + ch, g_lastB0[ch]);
+    }
+
+    b0Val = (uint8_t)(0x20 | ((octave & 0x07) << 2) | ((fnum >> 8) & 0x03));
+    g_lastB0[ch] = b0Val;
+
     OPL_Write(0xA0 + ch, (uint8_t)(fnum & 0xFF));
-    OPL_Write(0xB0 + ch, (uint8_t)(0x20 | ((octave & 0x07) << 2) | ((fnum >> 8) & 0x03)));
+    OPL_Write(0xB0 + ch, b0Val);
 }
 
 void OPL_NoteOff(uint8_t ch) {
     if (ch >= 9) return;
-    OPL_Write(0xB0 + ch, 0x00);
+    g_lastB0[ch] &= (uint8_t)(~0x20);
+    OPL_Write(0xB0 + ch, g_lastB0[ch]);
 }
 
 void OPL_SetPitch(uint8_t ch, int32_t pitch100) {
     int32_t s, f;
     int oct, semi;
     uint32_t f1, f2, fnum;
+    uint8_t b0Val;
 
     if (ch >= 9) return;
     if (pitch100 < 1200) pitch100 = 1200;
@@ -150,8 +162,11 @@ void OPL_SetPitch(uint8_t ch, int32_t pitch100) {
     if (oct > 7) oct = 7;
     if (fnum > 0x3FF) fnum = 0x3FF;
 
+    b0Val = (uint8_t)(0x20 | ((oct & 0x07) << 2) | ((fnum >> 8) & 0x03));
+    g_lastB0[ch] = b0Val;
+
     OPL_Write(0xA0 + ch, (uint8_t)(fnum & 0xFF));
-    OPL_Write(0xB0 + ch, (uint8_t)(0x20 | ((oct & 0x07) << 2) | ((fnum >> 8) & 0x03)));
+    OPL_Write(0xB0 + ch, b0Val);
 }
 
 int OPL_FNumToNote(uint16_t fnum, uint8_t *outNote) {
@@ -168,4 +183,27 @@ int OPL_FNumToNote(uint16_t fnum, uint8_t *outNote) {
     }
     *outNote = (uint8_t)(bestIdx + 1);
     return 1;
+}
+
+void OPL_FNumBlockToNoteOct(uint16_t fnum, uint8_t block, uint8_t *outNote, uint8_t *outOct) {
+    uint16_t normFnum = fnum & 0x3FF;
+    uint8_t normOct = block & 0x07;
+
+    if (normFnum == 0) {
+        *outNote = 1;
+        *outOct = normOct;
+        return;
+    }
+
+    while (normFnum < 0x14D && normOct > 0) {
+        normFnum <<= 1;
+        normOct--;
+    }
+    while (normFnum >= 0x29A && normOct < 7) {
+        normFnum >>= 1;
+        normOct++;
+    }
+
+    OPL_FNumToNote(normFnum, outNote);
+    *outOct = normOct;
 }

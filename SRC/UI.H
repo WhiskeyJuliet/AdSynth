@@ -18,8 +18,9 @@ typedef enum {
     DIALOG_ABOUT,
     DIALOG_INST_INFO,
     DIALOG_TIME_INFO,
-    DIALOG_BPM_INFO,              /* Right-click BPM tooltip */
-    DIALOG_BPM_WINDOW,            /* Double-click BPM editor & Clock rate presets */
+    DIALOG_TEMPO_INFO,            /* Right-click TMP / CLK tooltip */
+    DIALOG_TEMPO_WINDOW,          /* Double-click TMP editor */
+    DIALOG_TRACK_WINDOW,          /* Double-click CLK Track Engine Clock & Row Resolution setup */
     DIALOG_JUMP_TIME,
     DIALOG_INST_WINDOW
 } DialogMode;
@@ -37,6 +38,7 @@ void UI_Init(void);
 void UI_Shutdown(void);
 void UI_Clear(uint8_t color);
 void UI_Present(void);
+void UI_SetIdleCallback(void (*cb)(void));
 
 int UI_LoadTitlePCX(const char *filename);
 int UI_LoadSplashPCX(const char *filename);
@@ -55,13 +57,14 @@ void UI_DrawMouse(void);
 
 void UI_DrawHelpDialog(int page);
 void UI_DrawProjectDialog(int activeTab, const char *filename, int autoSaveEnabled, const char *status);
-void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFormat, int exportBnk, const char *status);
+void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFormat, int exportBnk, uint16_t importImfHz, uint16_t exportImfHz, const char *status);
 void UI_DrawConfirmDialog(const char *title, const char *prompt);
 void UI_DrawAboutDialog(void);
 void UI_DrawInstPopup(int mouseX, int mouseY, int presetIdx);
 void UI_DrawTimePopup(int mouseX, int mouseY, unsigned long totalMS);
-void UI_DrawBpmPopup(int mouseX, int mouseY, uint16_t bpm, uint16_t clockHz);
-void UI_DrawBpmDialog(const char *bpmBuffer, int activeSlot, uint16_t selectedClockHz);
+void UI_DrawTempoPopup(int mouseX, int mouseY, uint16_t tempo, uint16_t clockHz);
+void UI_DrawTempoDialog(const char *tempoBuffer);
+void UI_DrawTrackDialog(uint16_t selectedClockHz, uint16_t selectedRowMs);
 void UI_DrawJumpDialog(const char *timeStr, int activeSlot, const char *status);
 void UI_DrawInstWindow(int activeTab, int selectedInst, int pageOrScroll, const char *bnkInputFilename, const char *status);
 

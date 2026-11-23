@@ -18,5 +18,6 @@ void OPL_NoteOff(uint8_t channel);
 void OPL_SetPitch(uint8_t channel, int32_t pitch100);
 
 int OPL_FNumToNote(uint16_t fnum, uint8_t *outNote);
+void OPL_FNumBlockToNoteOct(uint16_t fnum, uint8_t block, uint8_t *outNote, uint8_t *outOct);
 
 #endif

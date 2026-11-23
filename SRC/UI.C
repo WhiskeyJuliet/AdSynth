@@ -173,6 +173,8 @@ static void SetupPalette(void) {
     }
 }
 
+static void (*g_idleCallback)(void) = NULL;
+
 int Mouse_Init(void) {
     union REGS regs;
     regs.w.ax = 0x0000;
@@ -328,13 +330,21 @@ void UI_Clear(uint8_t color) {
     memset(g_vgaBuffer, color, SCREEN_W * SCREEN_H);
 }
 
+void UI_SetIdleCallback(void (*cb)(void)) {
+    g_idleCallback = cb;
+}
+
 void UI_Present(void) {
     uint32_t *d;
     const uint32_t *s;
     int i;
 
-    while ((inp(0x3DA) & 0x08));
-    while (!(inp(0x3DA) & 0x08));
+    while ((inp(0x3DA) & 0x08)) {
+        if (g_idleCallback) g_idleCallback();
+    }
+    while (!(inp(0x3DA) & 0x08)) {
+        if (g_idleCallback) g_idleCallback();
+    }
 
     d = (uint32_t *)g_vgaPhysical;
     s = (const uint32_t *)g_vgaBuffer;
@@ -417,7 +427,7 @@ void UI_PrintText(int x, int y, const char *text, uint8_t color) {
         unsigned char ch = (unsigned char)*text++;
 
         if (ch == 1) {
-            static const uint8_t logo7x7[7] = {0x10, 0x38, 0x38, 0x1F, 0x15, 0x05, 0x01};
+            static const uint8_t logo7x7[7] = {0x30, 0x78, 0x78, 0x3F, 0x15, 0x05, 0x01};
             int col, row;
             for (col = 0; col < 7; ++col) {
                 uint8_t bits = logo7x7[col];
@@ -433,7 +443,7 @@ void UI_PrintText(int x, int y, const char *text, uint8_t color) {
             }
             cursorX += 8;
         } else if (ch == 2) {
-            static const uint8_t play7x7[7] = {0x7E, 0x3C, 0x18, 0x10, 0x00, 0x00, 0x00};
+            static const uint8_t play7x7[7] = {0x7F, 0x7F, 0x7F, 0x3E, 0x1C, 0x08, 0x00};
             int col, row;
             for (col = 0; col < 7; ++col) {
                 uint8_t bits = play7x7[col];
@@ -449,7 +459,7 @@ void UI_PrintText(int x, int y, const char *text, uint8_t color) {
             }
             cursorX += 8;
         } else if (ch == 3) {
-            static const uint8_t stop7x7[7] = {0x00, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x00};
+            static const uint8_t stop7x7[7] = {0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F};
             int col, row;
             for (col = 0; col < 7; ++col) {
                 uint8_t bits = stop7x7[col];
@@ -592,7 +602,7 @@ static void UI_DrawPianoRoll(void) {
 void UI_DrawApp(int selectedChannel, int selectedOctave, int selectedPreset, int cursorRow) {
     char buf[64];
     int r, ch;
-    int startRow;
+    int32_t startRow;
     unsigned long total_ms;
     unsigned long total_secs;
     unsigned int minutes, seconds, hundredths;
@@ -611,7 +621,7 @@ void UI_DrawApp(int selectedChannel, int selectedOctave, int selectedPreset, int
     UI_FillRect(0, 0, SCREEN_W, 14, 1);
     UI_DrawRect(0, 0, SCREEN_W, 14, 2);
 
-    /* AdLib Logo (0..13) */
+    /* 1. AdLib Logo (0..13) */
     logoHover = (g_mouse.x >= 2 && g_mouse.x <= 13 && g_mouse.y >= 2 && g_mouse.y <= 12);
     if (logoHover) {
         UI_PrintText(4, 3, "\x01", 0);
@@ -621,7 +631,7 @@ void UI_DrawApp(int selectedChannel, int selectedOctave, int selectedPreset, int
         UI_PrintText(4, 3, "\x01", 7);
     }
 
-    /* Program Title: ADSYNTH.PCX (14..56) */
+    /* 2. ADSYNTH.PCX Title (14..55) */
     if (g_titlePcx.pixels && g_titlePcx.width == 41 && g_titlePcx.height == 8) {
         for (py = 0; py < 8; ++py) {
             sy = 3 + py;
@@ -638,32 +648,38 @@ void UI_DrawApp(int selectedChannel, int selectedOctave, int selectedPreset, int
         UI_PrintText(14, 4, "ADSYNTH", 3);
     }
 
-    /* Octave (62..94) */
+    /* 3. OCT (60..80), INST (88..120), BPM (128..156), CLK (164..196) in 3x5 Mini Font */
     sprintf(buf, "OCT:%d", selectedOctave);
-    UI_PrintText(62, 3, buf, 7);
+    UI_PrintTextMini(73, 4, buf, 7);
 
-    /* Instrument Preset (98..142) */
     sprintf(buf, "INST:%02d", selectedPreset + 1);
-    UI_PrintText(98, 3, buf, 4);
+    UI_PrintTextMini(104, 4, buf, 4);
 
-    /* BPM (148..190) */
-    sprintf(buf, "BPM:%d", g_song.bpm);
-    UI_PrintText(148, 3, buf, 10);
+    sprintf(buf, "BPM:%d", g_song.tempo);
+    UI_PrintTextMini(142, 4, buf, 10);
 
-    /* Timecode (196..244): No brackets to optimize space */
-    total_ms = (unsigned long)g_song.currentRow * (unsigned long)Song_GetMsPerRow();
+    sprintf(buf, "CLK:%d", g_song.clockHz);
+    UI_PrintTextMini(181, 4, buf, 3);
+
+    /* 4. Inset Digital CD-Rack Timecode Display (204..258) */
+    UI_FillRect(228, 2, 54, 10, 0);
+    UI_FillRect(228, 2, 54, 1, 12); /* Top dark inset edge */
+    UI_FillRect(228, 2, 1, 10, 12); /* Left dark inset edge */
+    UI_FillRect(228, 11, 54, 1, 2); /* Bottom bevel highlight */
+    UI_FillRect(281, 2, 1, 10, 2);  /* Right bevel highlight */
+
+    total_ms = (unsigned long)((double)g_song.currentRow * Song_GetMsPerRowFloat());
     total_secs = total_ms / 1000UL;
     minutes = (unsigned int)(total_secs / 60UL);
     seconds = (unsigned int)(total_secs % 60UL);
     hundredths = (unsigned int)((total_ms % 1000UL) / 10UL);
     sprintf(buf, "%02u:%02u:%02u", minutes, seconds, hundredths);
-    UI_PrintText(198, 3, buf, 9);
+    UI_PrintText(231, 3, buf, 9);
 
-    /* Help Button: Clean '?' (288..298) */
+    /* 5. Help '?' & Play/Stop Icon */
     helpHover = (g_mouse.x >= 286 && g_mouse.x <= 298 && g_mouse.y >= 2 && g_mouse.y <= 12);
     UI_PrintText(290, 3, "?", helpHover ? 7 : 6);
 
-    /* Play/Stop Indicator (306..316) */
     UI_PrintText(308, 3, g_song.playing ? "\x02" : "\x03", g_song.playing ? 5 : 8);
 
     /* Channel Headers */
@@ -680,16 +696,16 @@ void UI_DrawApp(int selectedChannel, int selectedOctave, int selectedPreset, int
         }
 
         sprintf(buf, "CH%d", ch + 1);
-        UI_PrintText(32 + ch * 31, 21, buf, chColor);
+        UI_PrintText(36 + ch * 31, 21, buf, chColor);
     }
 
-    startRow = cursorRow >= 5 ? cursorRow - 5 : 0;
-    if (startRow > PATTERN_ROWS - 10) startRow = PATTERN_ROWS - 10;
+    startRow = (int32_t)cursorRow >= 5 ? (int32_t)cursorRow - 5 : 0;
+    if (startRow > (int32_t)PATTERN_ROWS - 10) startRow = (int32_t)PATTERN_ROWS - 10;
 
     Loop_GetRange(&g_song.loop, &loopStart, &loopEnd, &hasLoop);
 
     for (r = 0; r < 10; ++r) {
-        int rowIdx = startRow + r;
+        uint16_t rowIdx = (uint16_t)(startRow + r);
         int y = 33 + r * 12;
 
         if (rowIdx == g_song.currentRow) {
@@ -700,13 +716,13 @@ void UI_DrawApp(int selectedChannel, int selectedOctave, int selectedPreset, int
             UI_FillRect(4, y, 312, 11, 8);
         }
 
-        sprintf(buf, "%03X", rowIdx);
-        UI_PrintText(4, y + 2, buf, (rowIdx == cursorRow) ? 3 : 6);
+        sprintf(buf, "%04X", rowIdx);
+        UI_PrintText(4, y + 2, buf, (rowIdx == (uint16_t)cursorRow) ? 3 : 6);
 
         for (ch = 0; ch < MAX_CHANNELS; ++ch) {
             TrackerNote *n = &g_song.patterns[g_song.currentPattern].rows[rowIdx][ch];
-            int nx = 30 + ch * 31;
-            isCursor = (ch == selectedChannel && rowIdx == cursorRow);
+            int nx = 34 + ch * 31;
+            isCursor = (ch == selectedChannel && rowIdx == (uint16_t)cursorRow);
 
             if (isCursor) {
                 UI_FillRect(nx - 2, y, 29, 11, (n->flags & 0x01) ? 4 : 1);
@@ -744,6 +760,65 @@ void UI_DrawApp(int selectedChannel, int selectedOctave, int selectedPreset, int
     UI_DrawPianoRoll();
 }
 
+void UI_DrawTempoPopup(int mouseX, int mouseY, uint16_t tempo, uint16_t clockHz) {
+    char buf[64];
+    int x = mouseX + 4;
+    int y = mouseY + 4;
+    int w = 204, h = 42;
+    int pct = ((int)tempo * 100) / 120;
+    double ticksPerRow = ((double)clockHz * (double)g_song.rowMs) / 1000.0;
+
+    if (x + w > SCREEN_W) x = SCREEN_W - w - 4;
+    if (y + h > SCREEN_H) y = SCREEN_H - h - 4;
+
+    UI_FillRect(x, y, w, h, 1);
+    UI_DrawRect(x, y, w, h, 10);
+
+    sprintf(buf, "TEMPO: %d (%d%% SPEED)", tempo, pct);
+    UI_PrintText(x + 6, y + 5, buf, 10);
+
+    sprintf(buf, "CLK: %s", Song_GetClockDescription(clockHz));
+    UI_PrintTextMini(x + 6, y + 18, buf, 7);
+
+    sprintf(buf, "ROW: %dMS (%.1f TICKS/ROW)", g_song.rowMs, ticksPerRow);
+    UI_PrintTextMini(x + 6, y + 28, buf, 6);
+}
+
+void UI_DrawTempoDialog(const char *tempoBuffer) {
+    int x = 50, y = 55, w = 220, h = 88;
+    int textLen = (int)strlen(tempoBuffer);
+    int cursorX = x + 146 + (textLen * 6);
+    int blink;
+    char desc[48];
+
+    UI_FillRect(x, y, w, h, 1);
+    UI_DrawRect(x, y, w, h, 10);
+    UI_DrawDitherOverlay(x + 2, y + 2, w - 4, 14);
+
+    UI_PrintText(x + 12, y + 6, "SET PLAYBACK TEMPO", 10);
+
+    UI_PrintText(x + 12, y + 26, "BPM (30-300, 120=1X):", 7);
+    UI_FillRect(x + 142, y + 23, 56, 13, 0);
+    UI_DrawRect(x + 142, y + 23, 56, 13, 10);
+    UI_PrintText(x + 146, y + 26, tempoBuffer, 10);
+
+    blink = ((clock() / (CLOCKS_PER_SEC / 3)) & 1);
+    if (blink && textLen < 3) {
+        UI_FillRect(cursorX, y + 26, 5, 7, 10);
+    }
+
+    sprintf(desc, "SCALES RELATIVE TO %dMS/ROW", g_song.rowMs);
+    UI_PrintTextMini(x + 12, y + 43, desc, 6);
+
+    UI_FillRect(x + 35, y + 60, 60, 16, 2);
+    UI_DrawRect(x + 35, y + 60, 60, 16, 10);
+    UI_PrintText(x + 56, y + 64, "OK", 7);
+
+    UI_FillRect(x + 125, y + 60, 60, 16, 2);
+    UI_DrawRect(x + 125, y + 60, 60, 16, 2);
+    UI_PrintText(x + 137, y + 64, "CANCEL", 7);
+}
+
 void UI_DrawAboutDialog(void) {
     int x = 40, y = 35, w = 240, h = 130;
     int px, py, dx, dy;
@@ -777,7 +852,7 @@ void UI_DrawAboutDialog(void) {
     if (g_splashPcx.pixels) {
         int sw = g_splashPcx.width;
         int sh = g_splashPcx.height;
-        int sx = x + (w - sw) / 2 - 6;
+        int sx = x + (w - sw) / 2 - 8;
         int sy = y + 8;
 
         for (py = 0; py < sh; ++py) {
@@ -796,7 +871,8 @@ void UI_DrawAboutDialog(void) {
         }
     }
 
-    UI_PrintText(x + 204, y + 10, "V1.0", 3);
+    UI_PrintTextMini(x + 198, y + 5, "Beta", 6);
+    UI_PrintTextMini(x + 218, y + 5, "Pre2", 7);
 
     UI_PrintTextMini(x + 10, y + 36, "AdSynth is a free and open source music sequencer for", 6);
     UI_PrintTextMini(x + 10, y + 46, "OPL2 compatible soundcards. With support for", 6);
@@ -806,7 +882,7 @@ void UI_DrawAboutDialog(void) {
     UI_PrintTextMini(x + 10, y + 92, "Spritework, UI & UX by Whiskey_Juliet", 6);
     UI_PrintTextMini(x + 10, y + 102, "github.com/whiskeyjuliet/ - 2026", 6);
 
-    UI_PrintText(x + 44, y + 116, "[ ESC / CLICK TO CLOSE ]", 5);
+    UI_PrintText(x + 44, y + 116, "[ESC / CLICK TO CLOSE]", 5);
 }
 
 void UI_DrawProjectDialog(int activeTab, const char *filename, int autoSaveEnabled, const char *status) {
@@ -863,23 +939,25 @@ void UI_DrawProjectDialog(int activeTab, const char *filename, int autoSaveEnabl
     UI_PrintText(x + 158, y + 102, "CANCEL", 7);
 }
 
-void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFormat, int exportBnk, const char *status) {
+void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFormat, int exportBnk, uint16_t importImfHz, uint16_t exportImfHz, const char *status) {
     int x = 25, y = 35, w = 270, h = 130;
     int textLen = (int)strlen(filename);
     int cursorX = x + 74 + (textLen * 6);
     int blink;
+    char rateBuf[24];
 
     UI_FillRect(x, y, w, h, 1);
     UI_DrawRect(x, y, w, h, 4);
     UI_DrawDitherOverlay(x + 2, y + 2, w - 4, 14);
 
+    /* Tab 0 = IMPORT, Tab 1 = EXPORT */
     UI_FillRect(x + 8, y + 3, 70, 13, (activeTab == 0) ? 4 : 2);
-    UI_PrintText(x + 22, y + 6, "EXPORT", (activeTab == 0) ? 0 : 7);
+    UI_PrintText(x + 22, y + 6, "IMPORT", (activeTab == 0) ? 0 : 7);
 
     UI_FillRect(x + 84, y + 3, 70, 13, (activeTab == 1) ? 4 : 2);
-    UI_PrintText(x + 98, y + 6, "IMPORT", (activeTab == 1) ? 0 : 7);
+    UI_PrintText(x + 98, y + 6, "EXPORT", (activeTab == 1) ? 0 : 7);
 
-    UI_PrintText(x + 12, y + 24, (activeTab == 0) ? "EXPORT TO AUDIO STREAM:" : "IMPORT RAW AUDIO FILE:", 4);
+    UI_PrintText(x + 12, y + 24, (activeTab == 0) ? "IMPORT RAW AUDIO FILE:" : "EXPORT TO AUDIO STREAM:", 4);
 
     UI_PrintText(x + 12, y + 40, "FORMAT:", 7);
     UI_FillRect(x + 70, y + 38, 45, 12, !isDroFormat ? 3 : 2);
@@ -887,6 +965,26 @@ void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFor
 
     UI_FillRect(x + 125, y + 38, 45, 12, isDroFormat ? 3 : 2);
     UI_PrintText(x + 135, y + 40, "DRO", isDroFormat ? 0 : 7);
+
+    if (activeTab == 1) {
+        if (isDroFormat) {
+            sprintf(rateBuf, "1000HZ");
+            UI_FillRect(x + 180, y + 38, 76, 12, 2);
+            UI_DrawRect(x + 180, y + 38, 76, 12, 6);
+            UI_PrintText(x + 196, y + 40, rateBuf, 6);
+        } else {
+            sprintf(rateBuf, "HZ:%d", exportImfHz);
+            UI_FillRect(x + 180, y + 38, 76, 12, 2);
+            UI_DrawRect(x + 180, y + 38, 76, 12, 4);
+            UI_PrintText(x + 192, y + 40, rateBuf, 4);
+        }
+    } else if (!isDroFormat) {
+        if (importImfHz == 0) sprintf(rateBuf, "HZ:AUTO");
+        else sprintf(rateBuf, "HZ:%d", importImfHz);
+        UI_FillRect(x + 180, y + 38, 76, 12, 2);
+        UI_DrawRect(x + 180, y + 38, 76, 12, 3);
+        UI_PrintText(x + 186, y + 40, rateBuf, 3);
+    }
 
     UI_PrintText(x + 12, y + 57, "FILENAME:", 7);
     UI_FillRect(x + 70, y + 54, 186, 13, 0);
@@ -898,7 +996,7 @@ void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFor
         UI_FillRect(cursorX, y + 57, 5, 7, 3);
     }
 
-    if (activeTab == 0) {
+    if (activeTab == 1) {
         UI_FillRect(x + 12, y + 74, 10, 10, 0);
         UI_DrawRect(x + 12, y + 74, 10, 10, 4);
         if (exportBnk) {
@@ -906,7 +1004,7 @@ void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFor
         }
         UI_PrintText(x + 28, y + 76, "EXPORT SUPPORTING .BNK SOUNDBANK", exportBnk ? 7 : 6);
     } else {
-        UI_PrintText(x + 12, y + 76, "EXTRACTS NOTES & SOUNDBANK PATCHES", 6);
+        UI_PrintText(x + 12, y + 76, "AUTO-DETECTS HZ & PATCHES (10MS/ROW)", 6);
     }
 
     if (status && status[0]) {
@@ -917,7 +1015,7 @@ void UI_DrawImportExportDialog(int activeTab, const char *filename, int isDroFor
 
     UI_FillRect(x + 55, y + 107, 65, 15, 2);
     UI_DrawRect(x + 55, y + 107, 65, 15, 3);
-    UI_PrintText(x + 62, y + 111, (activeTab == 0 ? "EXPORT" : "IMPORT"), 7);
+    UI_PrintText(x + 62, y + 111, (activeTab == 0 ? "IMPORT" : "EXPORT"), 7);
 
     UI_FillRect(x + 145, y + 107, 65, 15, 2);
     UI_DrawRect(x + 145, y + 107, 65, 15, 2);
@@ -928,7 +1026,7 @@ void UI_DrawBpmPopup(int mouseX, int mouseY, uint16_t bpm, uint16_t clockHz) {
     char buf[48];
     int x = mouseX + 4;
     int y = mouseY + 4;
-    int w = 180, h = 34;
+    int w = 188, h = 34;
 
     if (x + w > SCREEN_W) x = SCREEN_W - w - 4;
     if (y + h > SCREEN_H) y = SCREEN_H - h - 4;
@@ -939,57 +1037,94 @@ void UI_DrawBpmPopup(int mouseX, int mouseY, uint16_t bpm, uint16_t clockHz) {
     sprintf(buf, "TEMPO: %d BPM", bpm);
     UI_PrintText(x + 6, y + 5, buf, 10);
 
-    sprintf(buf, "CLOCK: %s", Song_GetClockDescription(clockHz));
+    sprintf(buf, "CLK: %s", Song_GetClockDescription(clockHz));
     UI_PrintTextMini(x + 6, y + 19, buf, 7);
 }
 
-void UI_DrawBpmDialog(const char *bpmBuffer, int activeSlot, uint16_t selectedClockHz) {
-    int x = 40, y = 30, w = 240, h = 145;
+void UI_DrawBpmDialog(const char *bpmBuffer, int activeSlot) {
+    int x = 60, y = 60, w = 200, h = 80;
     int textLen = (int)strlen(bpmBuffer);
-    int cursorX = x + 62 + (textLen * 6);
+    int cursorX = x + 110 + (textLen * 6);
     int blink;
+    (void)activeSlot;
 
     UI_FillRect(x, y, w, h, 1);
     UI_DrawRect(x, y, w, h, 10);
     UI_DrawDitherOverlay(x + 2, y + 2, w - 4, 14);
 
-    UI_PrintText(x + 10, y + 6, "BPM & ENGINE CLOCK RESOLUTION", 10);
+    UI_PrintText(x + 10, y + 6, "SET SONG BPM", 10);
 
-    UI_PrintText(x + 12, y + 24, "BPM (30-300):", 7);
-    UI_FillRect(x + 60, y + 22, 60, 13, 0);
-    UI_DrawRect(x + 60, y + 22, 60, 13, 10);
-    UI_PrintText(x + 64, y + 25, bpmBuffer, 10);
+    UI_PrintText(x + 16, y + 26, "BPM (30-300):", 7);
+    UI_FillRect(x + 106, y + 23, 46, 13, 0);
+    UI_DrawRect(x + 106, y + 23, 46, 13, 10);
+    UI_PrintText(x + 110, y + 26, bpmBuffer, 10);
 
     blink = ((clock() / (CLOCKS_PER_SEC / 3)) & 1);
     if (blink && textLen < 3) {
-        UI_FillRect(cursorX, y + 25, 5, 7, 10);
+        UI_FillRect(cursorX, y + 26, 5, 7, 10);
     }
 
-    UI_PrintText(x + 12, y + 42, "CLOCK ENGINE PRESETS:", 4);
+    UI_FillRect(x + 30, y + 48, 55, 16, 2);
+    UI_DrawRect(x + 30, y + 48, 55, 16, 10);
+    UI_PrintText(x + 48, y + 52, "OK", 7);
 
-    /* 70 Hz Preset */
-    UI_FillRect(x + 12, y + 54, 216, 12, (selectedClockHz == 70) ? 10 : 2);
-    UI_PrintTextMini(x + 16, y + 57, "70 HZ   : WOLFENSTEIN 3D / VGA RETRACE", (selectedClockHz == 70) ? 0 : 7);
+    UI_FillRect(x + 115, y + 48, 55, 16, 2);
+    UI_DrawRect(x + 115, y + 48, 55, 16, 2);
+    UI_PrintText(x + 124, y + 52, "CANCEL", 7);
+}
 
-    /* 560 Hz Preset */
-    UI_FillRect(x + 12, y + 68, 216, 12, (selectedClockHz == 560) ? 10 : 2);
-    UI_PrintTextMini(x + 16, y + 71, "560 HZ  : COMMANDER KEEN / DUKE 2 / BIO", (selectedClockHz == 560) ? 0 : 7);
+void UI_DrawTrackDialog(uint16_t selectedClockHz, uint16_t selectedRowMs) {
+    int x = 30, y = 20, w = 260, h = 160;
+    char buf[64];
+    double tpr = ((double)selectedClockHz * (double)selectedRowMs) / 1000.0;
 
-    /* 700 Hz Preset */
-    UI_FillRect(x + 12, y + 82, 216, 12, (selectedClockHz == 700) ? 10 : 2);
-    UI_PrintTextMini(x + 16, y + 85, "700 HZ  : BLAKE STONE / MAJOR STRYKER", (selectedClockHz == 700) ? 0 : 7);
+    UI_FillRect(x, y, w, h, 1);
+    UI_DrawRect(x, y, w, h, 4);
+    UI_DrawDitherOverlay(x + 2, y + 2, w - 4, 14);
 
-    /* 1000 Hz Preset */
-    UI_FillRect(x + 12, y + 96, 216, 12, (selectedClockHz == 1000) ? 10 : 2);
-    UI_PrintTextMini(x + 16, y + 99, "1000 HZ : DOSBOX RAW OPL (.DRO 1MS TICK)", (selectedClockHz == 1000) ? 0 : 7);
+    UI_PrintText(x + 10, y + 6, "TRACK ENGINE & RESOLUTION", 4);
 
-    UI_FillRect(x + 40, y + 118, 65, 16, 2);
-    UI_DrawRect(x + 40, y + 118, 65, 16, 10);
-    UI_PrintText(x + 60, y + 122, "OK", 7);
+    sprintf(buf, "RATE: %dHZ | %dMS/ROW (%.1f TICKS)", selectedClockHz, selectedRowMs, tpr);
+    UI_PrintTextMini(x + 12, y + 21, buf, 9);
 
-    UI_FillRect(x + 135, y + 118, 65, 16, 2);
-    UI_DrawRect(x + 135, y + 118, 65, 16, 2);
-    UI_PrintText(x + 147, y + 122, "CANCEL", 7);
+    UI_PrintTextMini(x + 12, y + 32, "LEGACY ENGINE CLOCK:", 7);
+
+    UI_FillRect(x + 12, y + 41, 236, 11, (selectedClockHz == 280) ? 4 : 2);
+    UI_PrintTextMini(x + 16, y + 44, "280 HZ  : DUKE NUKEM II", (selectedClockHz == 280) ? 0 : 7);
+
+    UI_FillRect(x + 12, y + 54, 236, 11, (selectedClockHz == 560) ? 4 : 2);
+    UI_PrintTextMini(x + 16, y + 57, "560 HZ  : KEEN / BIO / STANDARD IMF", (selectedClockHz == 560) ? 0 : 7);
+
+    UI_FillRect(x + 12, y + 67, 236, 11, (selectedClockHz == 700) ? 4 : 2);
+    UI_PrintTextMini(x + 16, y + 70, "700 HZ  : WOLF3D / .WLF / BLAKE", (selectedClockHz == 700) ? 0 : 7);
+
+    UI_FillRect(x + 12, y + 80, 236, 11, (selectedClockHz == 1000) ? 4 : 2);
+    UI_PrintTextMini(x + 16, y + 83, "1000 HZ : DOSBOX RAW OPL (.DRO)", (selectedClockHz == 1000) ? 0 : 7);
+
+    UI_PrintTextMini(x + 12, y + 98, "TIMELINE ROW INTERVAL (RESCALES TRACK):", 7);
+
+    UI_FillRect(x + 12,  y + 107, 44, 14, (selectedRowMs == 10)  ? 3 : 2);
+    UI_PrintTextMini(x + 18,  y + 111, "10MS",  (selectedRowMs == 10)  ? 0 : 7);
+
+    UI_FillRect(x + 60,  y + 107, 44, 14, (selectedRowMs == 20)  ? 3 : 2);
+    UI_PrintTextMini(x + 66,  y + 111, "20MS",  (selectedRowMs == 20)  ? 0 : 7);
+
+    UI_FillRect(x + 108, y + 107, 44, 14, (selectedRowMs == 30)  ? 3 : 2);
+    UI_PrintTextMini(x + 114, y + 111, "30MS",  (selectedRowMs == 30)  ? 0 : 7);
+
+    UI_FillRect(x + 156, y + 107, 44, 14, (selectedRowMs == 60)  ? 3 : 2);
+    UI_PrintTextMini(x + 162, y + 111, "60MS",  (selectedRowMs == 60)  ? 0 : 7);
+
+    UI_FillRect(x + 204, y + 107, 44, 14, (selectedRowMs == 120) ? 3 : 2);
+    UI_PrintTextMini(x + 208, y + 111, "120MS", (selectedRowMs == 120) ? 0 : 7);
+
+    UI_FillRect(x + 45, y + 134, 65, 16, 2);
+    UI_DrawRect(x + 45, y + 134, 65, 16, 4);
+    UI_PrintText(x + 70, y + 138, "OK", 7);
+
+    UI_FillRect(x + 150, y + 134, 65, 16, 2);
+    UI_DrawRect(x + 150, y + 134, 65, 16, 2);
+    UI_PrintText(x + 163, y + 138, "CANCEL", 7);
 }
 
 void UI_DrawConfirmDialog(const char *title, const char *prompt) {
@@ -1113,7 +1248,7 @@ void UI_DrawHelpDialog(int page) {
         UI_PrintText(x + 10, y + 44, "F2         : SAVE / LOAD PROJECT (.ADS)", 7);
         UI_PrintText(x + 10, y + 56, "F3         : IMPORT / EXPORT (IMF / DRO)", 7);
         UI_PrintText(x + 10, y + 68, "F4         : OPEN HELP GUIDE", 7);
-        UI_PrintText(x + 10, y + 80, "ESC        : QUIT CONFIRMATION MODAL", 8);
+        UI_PrintText(x + 10, y + 80, "ESC        : QUIT WITH CONFIRMATION", 8);
 
         UI_PrintText(x + 10, y + 98, "CLIPBOARD & HISTORY:", 4);
         UI_PrintText(x + 10, y + 110, "CTRL+X     : CUT SELECTED CELLS", 7);
@@ -1132,7 +1267,7 @@ void UI_DrawHelpDialog(int page) {
         UI_PrintText(x + 10, y + 56, "  L-CLICK  : ASCEND (+1, +SHIFT = +10)", 6);
         UI_PrintText(x + 10, y + 68, "  R-CLICK  : DESCEND (-1, +SHIFT = -10)", 6);
         UI_PrintText(x + 10, y + 80, "INST LABEL : R-CLICK INFO, DBL-CLICK BROWSER", 7);
-        UI_PrintText(x + 10, y + 92, "BPM LABEL  : R-CLICK INFO, DBL-CLICK EDITOR", 7);
+        UI_PrintText(x + 10, y + 92, "BPM / CLK  : R-CLICK INFO, DBL-CLICK MENU", 7);
         UI_PrintText(x + 10, y + 104, "TIMECODE   : R-CLICK LENGTH, DBL-CLICK JUMP", 7);
 
         UI_PrintText(x + 10, y + 120, "GRID & CHANNEL CONTROLS:", 4);
