@@ -1,4 +1,4 @@
-![Alt text]("Supporting Files/SPLASH.png?raw=true" "AdSynth")
+![Alt text](github.com/WhiskeyJuliet/AdSynth/blob/main/Supporting Files/SPLASH.png?raw=true "AdSynth")
 
 # ADSYNTH: A MS-DOS AdLib FM Music Sequencer
 
